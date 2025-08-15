@@ -223,6 +223,7 @@ villa_long_term_popular = span[(span["TotalBookings"] >= span_thr_book) & (span[
 
 
 weekly = df.set_index("Entry_dt").resample("W")["ReserveId"].count().reset_index(name="Bookings")
+max_booking_day = weekly.loc[weekly["Bookings"].idxmax(), "Entry_dt"]
 plt.figure()
 plt.plot(weekly["Entry_dt"], weekly["Bookings"])
 plt.title("Weekly Bookings (All Villas)")
