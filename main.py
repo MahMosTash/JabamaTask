@@ -5,6 +5,7 @@ import jdatetime
 from datetime import datetime
 from collections import Counter
 import matplotlib.pyplot as plt
+from scipy.stats import spearmanr
 import os
 
 DB_PATH = "reservations.db"
@@ -17,11 +18,6 @@ ROLL_WINDOW_DAYS = 14
 os.makedirs(OUTDIR, exist_ok=True)
 
 def parse_mixed_str_to_greg(s: str) -> pd.Timestamp:
-    """
-    ورودی مثل: 'Shahrivar 2, 2022, 12:00 AM'
-    ماه جلالی، سال میلادی، ساعت ۱۲ساعته.
-    سال جلالی = سال میلادی - ۶۲۱
-    """
     if pd.isna(s):
         return pd.NaT
     try:
@@ -67,7 +63,7 @@ conn.close()
 have_parts = all(c in df.columns for c in [
     "ReserveSubmitYear","ReserveSubmitMonth","ReserveSubmitDay","ReserveSubmitHour",
     "EntryYear","EntryMonth","EntryDay","EntryHour",
-    "ExitYear","ExitMonth","ExitDay","ExitHour"
+    "ExitYear","ExitMonth","ExitDay","ExitHour, "
 ])
 
 if have_parts:
@@ -94,7 +90,6 @@ outliers_parse = df.loc[~mask_valid, ["ReserveId","ReserveSubmitTime","Entry","E
 df = df.loc[mask_valid].copy()
 
 
-df["StayDays"] = (df["Exit_dt"] - df["Entry_dt"]).dt.days
 df["LeadDays"] = (df["Entry_dt"] - df["ReserveSubmit_dt"]).dt.days
 df["Week"]     = df["Entry_dt"].dt.to_period("W").apply(lambda p: p.start_time)
 df["Month"]    = df["Entry_dt"].dt.to_period("M").apply(lambda p: p.start_time)
@@ -125,15 +120,15 @@ plt.title("Distribution: Bookings per User")
 plt.xlabel("Bookings"); plt.ylabel("Users")
 save_plot(os.path.join(OUTDIR, "hist_bookings_per_user.png"))
 
-user_counts_filtered = user_counts[user_counts['Bookings'] <= 50]
+user_counts_filtered = user_counts[user_counts['Bookings'] <= 25]
 
 plt.figure(figsize=(8, 5))
 plt.hist(user_counts_filtered['Bookings'], bins=50)
-plt.xticks(range(0, 51, 2))
-plt.title('Distribution: Bookings per User (Bookings ≤ 50)')
+plt.xticks(range(0, 26, 1))
+plt.title('Distribution: Bookings per User (Bookings ≤ 25)')
 plt.xlabel('Bookings')
 plt.ylabel('Users')
-save_plot(os.path.join(OUTDIR, "bookings_distribution_under_50.png"))
+save_plot(os.path.join(OUTDIR, "bookings_distribution_under_25.png"))
 plt.show()
 
 plt.figure(figsize=(8, 5))
@@ -177,9 +172,19 @@ overlap_villa_df = pd.DataFrame(overlaps_villa, columns=[
 ])
 
 
-villa_avg_stay = df.groupby("VillaId")["StayDays"].mean().reset_index(name="AvgStayDays")
+villa_avg_stay = df.groupby("VillaId")["ResidentialDays"].mean().reset_index(name="AvgStayDays")
+
 vas_thr = villa_avg_stay["AvgStayDays"].quantile(PCT_HIGH) if len(villa_avg_stay) else np.nan
 villa_long_stay = villa_avg_stay[villa_avg_stay["AvgStayDays"] >= vas_thr].sort_values("AvgStayDays", ascending=False) if not np.isnan(vas_thr) else villa_avg_stay.iloc[0:0]
+villa_long_stay_top20 = villa_long_stay.head(20)
+if not villa_long_stay_top20.empty:
+    plt.figure(figsize=(10, 6))
+    plt.bar(villa_long_stay_top20["VillaId"].astype(str), villa_long_stay_top20["AvgStayDays"], color="skyblue")
+    plt.title("Villas with Long Average Stay Days")
+    plt.xlabel("VillaId")
+    plt.ylabel("Average Stay Days")
+    plt.xticks(rotation=45)
+    save_plot(os.path.join(OUTDIR, "villa_long_stay_top20_chart.png"))
 
 
 user_villa_counts = df.groupby(["UserId","VillaId"])["ReserveId"].count().reset_index(name="TimesBooked")
@@ -205,32 +210,6 @@ plt.xlabel("Days between ReserveSubmit and Entry"); plt.ylabel("Reservations")
 save_plot(os.path.join(OUTDIR, "hist_lead_time.png"))
 
 
-g_counts = (
-    df.set_index("Entry_dt")
-    .groupby("VillaId")["ReserveId"]
-    .resample("D").count()
-    .rename("DailyBookings")
-    .reset_index()
-)
-g_counts["Rolling14"] = g_counts.groupby("VillaId")["DailyBookings"].transform(lambda s: s.rolling(ROLL_WINDOW_DAYS, min_periods=1).sum())
-def flag_bursts(sub):
-    thr = sub["Rolling14"].quantile(PCT_HIGH) if len(sub) else np.nan
-    sub["IsBurst"] = sub["Rolling14"] >= thr if not np.isnan(thr) else False
-    sub["BurstThreshold"] = thr
-    return sub
-villa_bursts = g_counts.groupby("VillaId", group_keys=False).apply(flag_bursts)
-villa_burst_days = villa_bursts[villa_bursts["IsBurst"]]
-
-if not top10_villas.empty:
-    top_villa_id = int(top10_villas.iloc[0]["VillaId"])
-    vser = villa_bursts[villa_bursts["VillaId"] == top_villa_id]
-    if not vser.empty:
-        plt.figure()
-        plt.plot(vser["Entry_dt"], vser["Rolling14"])
-        plt.title(f"Rolling {ROLL_WINDOW_DAYS}-day Bookings - Villa {top_villa_id}")
-        plt.xlabel("Date"); plt.ylabel(f"Bookings (rolling {ROLL_WINDOW_DAYS}d)")
-        save_plot(os.path.join(OUTDIR, "rolling14_top_villa.png"))
-
 
 span = df.groupby("VillaId").agg(
     FirstEntry=("Entry_dt","min"),
@@ -255,17 +234,32 @@ weekday_counter = Counter()
 for _, row in df.iterrows():
     if pd.isna(row["Entry_dt"]) or pd.isna(row["Exit_dt"]):
         continue
+
     current_day = row["Entry_dt"].normalize()
     last_day = row["Exit_dt"].normalize()
-    while current_day <= last_day:
-        weekday_counter[current_day.weekday()] += 1
+    days_counted = 0
+
+    while current_day < last_day:
+        weekday_num = current_day.weekday()
+        if weekday_num == 6:
+            adjusted_weekday = 0
+        else:
+            adjusted_weekday = weekday_num + 1
+
+        weekday_map = {0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday",
+                       4: "Thursday", 5: "Friday", 6: "Saturday"}
+        weekday_name = weekday_map[adjusted_weekday]
+        weekday_counter[weekday_name] += 1
+        days_counted += 1
         current_day += pd.Timedelta(days=1)
 
-weekday_df = pd.DataFrame.from_dict(weekday_counter, orient="index", columns=["Count"]).sort_index()
+weekday_order = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"]
+weekday_counts = pd.Series({day: weekday_counter.get(day, 0) for day in weekday_order})
 
-weekday_map = {0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday",
-               4: "Thursday", 5: "Friday", 6: "Saturday"}
-weekday_df["Weekday"] = weekday_df.index.map(weekday_map)
+weekday_df = pd.DataFrame({
+    "Count": weekday_counts.values,
+    "Weekday": weekday_counts.index
+})
 
 plt.figure(figsize=(6, 6))
 plt.pie(weekday_df["Count"], labels=weekday_df["Weekday"], autopct='%1.1f%%', startangle=90)
@@ -273,7 +267,6 @@ plt.title("Reserved Days of Week")
 save_plot(os.path.join(OUTDIR, "reserved_days_pie.png"))
 
 
-from scipy.stats import spearmanr
 corr_villa = spearmanr(-villa_counts["VillaId"], villa_counts["Bookings"]) if len(villa_counts) > 1 else (np.nan, np.nan)
 user_counts_ren = user_counts.rename(columns={"Bookings":"TotalBookings"})
 user_first_entry = df.groupby("UserId")["Entry_dt"].min().reset_index(name="FirstEntry")
@@ -292,12 +285,11 @@ add(overlap_user_df, "overlap_user.csv")
 add(overlap_villa_df, "overlap_villa.csv")
 add(villa_avg_stay, "villa_avg_stay.csv")
 add(villa_long_stay, "villa_long_stay_outliers.csv")
-add(user_villa_counts, "user_villa_loyal_pairs.csv")
+add(loyal_pairs, "user_villa_loyal_pairs.csv")
 add(user_distinct_villas, "user_distinct_villas.csv")
 add(user_explorers, "user_explorers_outliers.csv")
 add(planners, "lead_planners.csv")
 add(last_minute, "lead_last_minute.csv")
-add(villa_burst_days, "villa_burst_days.csv")
 add(villa_long_term_popular, "villa_long_term_popular.csv")
 add(weekly, "weekly_bookings.csv")
 add(span, "span_villa_activity.csv")
