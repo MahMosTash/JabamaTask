@@ -3,8 +3,8 @@ import jdatetime
 import sqlite3
 import re
 
-file_path = "Jabama APM Task Data.xlsx"  # Change if needed
-sheet_name = 0  # Or actual sheet name if needed
+file_path = "Jabama APM Task Data.xlsx"
+sheet_name = 0
 db_name = "reservations.db"
 csv_name = "reservations.csv"
 
