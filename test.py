@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import jdatetime
 from datetime import datetime
+from collections import Counter
 import matplotlib.pyplot as plt
 import os
 
@@ -248,6 +249,28 @@ plt.plot(weekly["Entry_dt"], weekly["Bookings"])
 plt.title("Weekly Bookings (All Villas)")
 plt.xlabel("Week"); plt.ylabel("Bookings")
 save_plot(os.path.join(OUTDIR, "weekly_bookings.png"))
+
+weekday_counter = Counter()
+
+for _, row in df.iterrows():
+    if pd.isna(row["Entry_dt"]) or pd.isna(row["Exit_dt"]):
+        continue
+    current_day = row["Entry_dt"].normalize()
+    last_day = row["Exit_dt"].normalize()
+    while current_day <= last_day:
+        weekday_counter[current_day.weekday()] += 1
+        current_day += pd.Timedelta(days=1)
+
+weekday_df = pd.DataFrame.from_dict(weekday_counter, orient="index", columns=["Count"]).sort_index()
+
+weekday_map = {0: "Sunday", 1: "Monday", 2: "Tuesday", 3: "Wednesday",
+               4: "Thursday", 5: "Friday", 6: "Saturday"}
+weekday_df["Weekday"] = weekday_df.index.map(weekday_map)
+
+plt.figure(figsize=(6, 6))
+plt.pie(weekday_df["Count"], labels=weekday_df["Weekday"], autopct='%1.1f%%', startangle=90)
+plt.title("Reserved Days of Week")
+save_plot(os.path.join(OUTDIR, "reserved_days_pie.png"))
 
 
 from scipy.stats import spearmanr
